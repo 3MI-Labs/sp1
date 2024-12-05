@@ -5901,7 +5901,7 @@ dependencies = [
 [[package]]
 name = "sp1-lib"
 version = "4.0.0-rc.1"
-source = "git+https://github.com/succinctlabs/sp1.git?branch=v4.0.0-rc.2#43792f1c6b7ff80f6c854d4eab9f60e0d49b822e"
+source = "git+https://github.com/succinctlabs/sp1.git?branch=v4.0.0-rc.2#9bb49f4c6a5757c597e5b13a3e9e8a2b6e18cd41"
 dependencies = [
  "bincode",
  "serde",
