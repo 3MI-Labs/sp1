@@ -223,7 +223,8 @@ pub fn hook_r1_ecrecover(_: HookEnv, buf: &[u8]) -> Vec<Vec<u8>> {
         return vec![vec![0]];
     };
 
-    let bytes = recovered_key.to_sec1_bytes();
+    let recovered_key_encoded = recovered_key.to_encoded_point(true);
+    let bytes = recovered_key_encoded.as_bytes();
 
     let (_, s) = sig.split_scalars();
     let s_inverse = s.invert();
