@@ -8,7 +8,7 @@ use p3_util::log2_ceil_usize;
 
 use crate::{
     air::{MachineAir, MultiTableAirBuilder, SP1AirBuilder},
-    lookup::{Interaction, InteractionBuilder, InteractionKind},
+    lookup::{InteractionKind, LookupInteraction, LookupInteractionBuilder},
 };
 
 use super::{
@@ -20,21 +20,21 @@ pub struct Chip<F: Field, A> {
     /// The underlying AIR of the chip for constraint evaluation.
     air: A,
     /// The interactions that the chip sends.
-    sends: Vec<Interaction<F>>,
+    sends: Vec<LookupInteraction<F>>,
     /// The interactions that the chip receives.
-    receives: Vec<Interaction<F>>,
+    receives: Vec<LookupInteraction<F>>,
     /// The relative log degree of the quotient polynomial, i.e. `log2(max_constraint_degree - 1)`.
     log_quotient_degree: usize,
 }
 
 impl<F: Field, A> Chip<F, A> {
     /// The send interactions of the chip.
-    pub fn sends(&self) -> &[Interaction<F>] {
+    pub fn sends(&self) -> &[LookupInteraction<F>] {
         &self.sends
     }
 
     /// The receive interactions of the chip.
-    pub fn receives(&self) -> &[Interaction<F>] {
+    pub fn receives(&self) -> &[LookupInteraction<F>] {
         &self.receives
     }
 
@@ -61,15 +61,21 @@ where
     F: Field,
     A: BaseAir<F>,
 {
-    /// Records the interactions and constraint degree from the air and crates a new chip.
+    /// Records the lookup interactions and constraint degree from the air and crates a new chip.
     pub fn new(air: A) -> Self
     where
-        A: MachineAir<F> + Air<InteractionBuilder<F>> + Air<SymbolicAirBuilder<F>>,
+        A: MachineAir<F> + Air<LookupInteractionBuilder<F>> + Air<SymbolicAirBuilder<F>>,
     {
-        let mut builder = InteractionBuilder::new(air.preprocessed_width(), air.width());
+        // Initialize the builder with the air's width data.
+        let mut builder = LookupInteractionBuilder::new(air.preprocessed_width(), air.width());
+
+        // Evaluate the air into the builder.
         air.eval(&mut builder);
+
+        // Consume the builder to obtain the interactions sent and received by this chip.
         let (sends, receives) = builder.interactions();
 
+        // Count the number of interactions with the byte lookup table.
         let nb_byte_sends = sends.iter().filter(|s| s.kind == InteractionKind::Byte).count();
         let nb_byte_receives = receives.iter().filter(|r| r.kind == InteractionKind::Byte).count();
         tracing::debug!(
@@ -81,6 +87,7 @@ where
         let mut max_constraint_degree =
             get_max_constraint_degree(&air, air.preprocessed_width(), PROOF_MAX_NUM_PVS);
 
+        // If either list of interactions is not empty, then the maximum constraint degree is at least 3.
         if !sends.is_empty() || !receives.is_empty() {
             max_constraint_degree = max_constraint_degree.max(3);
         }
@@ -116,8 +123,8 @@ where
     /// Generates a permutation trace for the given matrix.
     pub fn generate_permutation_trace<EF: ExtensionField<F>>(
         &self,
-        preprocessed: Option<&RowMajorMatrix<F>>,
-        main: &RowMajorMatrix<F>,
+        preprocessed_trace: Option<&RowMajorMatrix<F>>,
+        main_trace: &RowMajorMatrix<F>,
         random_elements: &[EF],
     ) -> (RowMajorMatrix<EF>, EF, EF)
     where
@@ -128,8 +135,8 @@ where
         generate_permutation_trace(
             &self.sends,
             &self.receives,
-            preprocessed,
-            main,
+            preprocessed_trace,
+            main_trace,
             random_elements,
             batch_size,
         )

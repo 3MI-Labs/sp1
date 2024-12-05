@@ -148,7 +148,8 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> StarkMachine<SC, A> {
         self.chips.iter().filter(|chip| chip.included(shard))
     }
 
-    /// Returns an iterator over the chips in the machine that are included in the given shard.
+    /// Returns an iterator over the chips in the machine that are included in the given shard, in the order of the
+    /// given chip ordering
     pub fn shard_chips_ordered<'a, 'b>(
         &'a self,
         chip_ordering: &'b HashMap<String, usize>,
@@ -306,7 +307,7 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> StarkMachine<SC, A> {
             });
         });
 
-        // Verify the shard proofs.
+        // Verify the presence of at least one shard proof.
         if proof.shard_proofs.is_empty() {
             return Err(MachineVerificationError::EmptyProof);
         }

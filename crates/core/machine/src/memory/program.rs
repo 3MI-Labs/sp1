@@ -1,3 +1,11 @@
+//! Defines the [MemoryProgramChip] and its relevant implementations.
+//!
+//! From [MemoryProgramPreprocessedCols]: the layout of each row of the virtual trace is:
+//! +---------+---------------------------------+---------+
+//! | address |              value              | is_real |
+//! | 1 byte  |             4 bytes             | 1 byte  |
+//! +---------+---------------------------------+---------+
+
 use core::{
     borrow::{Borrow, BorrowMut},
     mem::size_of,
@@ -21,14 +29,27 @@ use crate::{operations::IsZeroOperation, utils::pad_rows_fixed};
 
 pub const NUM_MEMORY_PROGRAM_PREPROCESSED_COLS: usize =
     size_of::<MemoryProgramPreprocessedCols<u8>>();
+
+/// The number of multiplicity columns for the [MemoryProgramChip]
 pub const NUM_MEMORY_PROGRAM_MULT_COLS: usize = size_of::<MemoryProgramMultCols<u8>>();
 
 /// The column layout for the chip.
+///
+/// ```md
+/// +---------+---------------------------------+---------+
+/// | address |              value              | is_real |
+/// | 1 byte  |             4 bytes             | 1 byte  |
+/// +---------+---------------------------------+---------+
+/// ```
 #[derive(AlignedBorrow, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MemoryProgramPreprocessedCols<T> {
+    /// The memory address that is accessed.
     pub addr: T,
+    /// The value that is read from or written to the address.
     pub value: Word<T>,
+    // FIXME Check whether this doc comment is correct.
+    /// Whether the access is real.
     pub is_real: T,
 }
 
@@ -36,7 +57,7 @@ pub struct MemoryProgramPreprocessedCols<T> {
 #[derive(AlignedBorrow, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MemoryProgramMultCols<T> {
-    /// The multiplicity of the event.
+    /// The multiplicity of the memory access event.
     ///
     /// This column is technically redundant with `is_real`, but it's included for clarity.
     pub multiplicity: T,

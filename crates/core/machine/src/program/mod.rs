@@ -20,16 +20,22 @@ pub const NUM_PROGRAM_PREPROCESSED_COLS: usize = size_of::<ProgramPreprocessedCo
 /// The number of columns for the program multiplicities.
 pub const NUM_PROGRAM_MULT_COLS: usize = size_of::<ProgramMultiplicityCols<u8>>();
 
-/// The column layout for the chip.
+/// The virtual columns of the preprocessed trace for the [ProgramChip].
+///
+/// Since the program is known before prove-time, the virtual trace of the [`ProgramChip`] these columns hold the
+/// information on which instruction is used for each value of the program counter.
 #[derive(AlignedBorrow, Clone, Copy, Default)]
 #[repr(C)]
 pub struct ProgramPreprocessedCols<T> {
+    /// The value of the program counter.
     pub pc: T,
+    /// The information on the instruction to be performed at this program counter value.
     pub instruction: InstructionCols<T>,
+    /// The opcode selectors for this instruction
     pub selectors: OpcodeSelectorCols<T>,
 }
 
-/// The column layout for the chip.
+/// The real columns of the trace for the [ProgramChip].
 #[derive(AlignedBorrow, Clone, Copy, Default)]
 #[repr(C)]
 pub struct ProgramMultiplicityCols<T> {
@@ -37,7 +43,7 @@ pub struct ProgramMultiplicityCols<T> {
     pub multiplicity: T,
 }
 
-/// A chip that implements addition for the opcodes ADD and ADDI.
+/// The chip which handles the execution of the program.
 #[derive(Default)]
 pub struct ProgramChip;
 
@@ -52,6 +58,7 @@ impl<F: PrimeField> MachineAir<F> for ProgramChip {
 
     type Program = Program;
 
+    /// Gives this chip's name as `"Program"`.
     fn name(&self) -> String {
         "Program".to_string()
     }
@@ -60,15 +67,21 @@ impl<F: PrimeField> MachineAir<F> for ProgramChip {
         NUM_PROGRAM_PREPROCESSED_COLS
     }
 
+    /// Generates the preprocessed trace of the program chip for the given [Program].
     fn generate_preprocessed_trace(&self, program: &Self::Program) -> Option<RowMajorMatrix<F>> {
         debug_assert!(
             !program.instructions.is_empty() || program.preprocessed_shape.is_some(),
             "empty program"
         );
+
         let mut rows = program
+            // Enumerate over the instructions of the given program
             .instructions
             .iter()
             .enumerate()
+            /* For each instruction:
+               1.
+            */
             .map(|(i, &instruction)| {
                 let pc = program.pc_base + (i as u32 * 4);
                 let mut row = [F::zero(); NUM_PROGRAM_PREPROCESSED_COLS];

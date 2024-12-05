@@ -40,6 +40,7 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
     {
         use itertools::izip;
 
+        // Destructure the given shard proof
         let ShardProof {
             commitment,
             opened_values,
@@ -49,13 +50,16 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
             ..
         } = proof;
 
-        let pcs = config.pcs();
+        // Obtain handle on the PCS
+        let pcs: &SC::Pcs = config.pcs();
 
+        // Check that the shard proof contains opened values for the expected number of chips.
         if chips.len() != opened_values.chips.len() {
             return Err(VerificationError::ChipOpeningLengthMismatch);
         }
 
-        let chip_scopes = chips.iter().map(|chip| chip.commit_scope()).collect::<Vec<_>>();
+        let chip_scopes =
+            chips.iter().map(|chip| chip.commit_scope()).collect::<Vec<InteractionScope>>();
 
         // Assert that the byte multiplicities don't overflow.
         let mut max_byte_lookup_mult = 0u64;
@@ -74,16 +78,21 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
             "Byte multiplicities overflow"
         );
 
-        let log_degrees = opened_values.chips.iter().map(|val| val.log_degree).collect::<Vec<_>>();
+        // Collect the log degree of each chip
+        let log_degrees: Vec<usize> =
+            opened_values.chips.iter().map(|val| val.log_degree).collect();
 
-        let log_quotient_degrees =
-            chips.iter().map(|chip| chip.log_quotient_degree()).collect::<Vec<_>>();
+        // Collect the log quotient degree of each chip
+        let log_quotient_degrees: Vec<usize> =
+            chips.iter().map(|chip| chip.log_quotient_degree()).collect();
 
-        let trace_domains = log_degrees
+        // Collect the trace domains of each chip from the PCS's natural domain for each log degree
+        let trace_domains: Vec<<SC>::Domain> = log_degrees
             .iter()
             .map(|log_degree| pcs.natural_domain_for_degree(1 << log_degree))
-            .collect::<Vec<_>>();
+            .collect();
 
+        // Destructure the shard commitment
         let ShardCommitment {
             global_main_commit,
             local_main_commit,
@@ -91,17 +100,23 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
             quotient_commit,
         } = commitment;
 
+        // Hash the local_main_commit (the global_main_commit already hashed into the challenger in the calling
+        // function).
         challenger.observe(local_main_commit.clone());
 
-        let local_permutation_challenges =
-            (0..2).map(|_| challenger.sample_ext_element::<SC::Challenge>()).collect::<Vec<_>>();
+        // Sample two random elements from the challenger for the local permutation check
+        let local_permutation_challenges: Vec<SC::Challenge> =
+            (0..2).map(|_| challenger.sample_ext_element::<SC::Challenge>()).collect();
 
+        // Hash the permutation_commit
         challenger.observe(permutation_commit.clone());
+
         // Observe the cumulative sums and constrain any sum without a corresponding scope to be
         // zero.
         for (opening, chip) in opened_values.chips.iter().zip_eq(chips.iter()) {
             let global_sum = opening.global_cumulative_sum;
             let local_sum = opening.local_cumulative_sum;
+
             challenger.observe_slice(global_sum.as_base_slice());
             challenger.observe_slice(local_sum.as_base_slice());
 

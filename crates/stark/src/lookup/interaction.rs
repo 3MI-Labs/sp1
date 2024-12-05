@@ -1,3 +1,13 @@
+//! Lookup table interactions
+//!
+//! Chips can lookup value from different tables in the system. The [`Interaction`] type captures the data about such
+//! interactions:
+//!
+//! - the values of the interaction: what is being written to or read from the table.
+//! - the multiplicity of the interaction: how many times the lookup is performed.
+//! - the kind of the interaction: which table the interaction is with.
+//! - the scope of the interaction:
+
 use core::fmt::{Debug, Display};
 
 use p3_air::VirtualPairCol;
@@ -7,14 +17,15 @@ use crate::air::InteractionScope;
 
 /// An interaction for a lookup or a permutation argument.
 #[derive(Clone)]
-pub struct Interaction<F: Field> {
+pub struct LookupInteraction<F: Field> {
     /// The values of the interaction.
     pub values: Vec<VirtualPairCol<F>>,
     /// The multiplicity of the interaction.
     pub multiplicity: VirtualPairCol<F>,
     /// The kind of interaction.
     pub kind: InteractionKind,
-    /// The scope of the interaction.
+    /// Whether the interaction is [`Local`](InteractionScope::Local) to the Chip, or
+    /// [`Global`](InteractionScope::Global) to the program.
     pub scope: InteractionScope,
 }
 
@@ -63,7 +74,7 @@ impl InteractionKind {
     }
 }
 
-impl<F: Field> Interaction<F> {
+impl<F: Field> LookupInteraction<F> {
     /// Create a new interaction.
     pub const fn new(
         values: Vec<VirtualPairCol<F>>,
@@ -80,7 +91,7 @@ impl<F: Field> Interaction<F> {
     }
 }
 
-impl<F: Field> Debug for Interaction<F> {
+impl<F: Field> Debug for LookupInteraction<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Interaction")
             .field("kind", &self.kind)

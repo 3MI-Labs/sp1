@@ -146,6 +146,7 @@ impl<F: PrimeField32> RiscvAir<F> {
     #[instrument("construct RiscvAir machine", level = "debug", skip_all)]
     pub fn machine<SC: StarkGenericConfig<Val = F>>(config: SC) -> StarkMachine<SC, Self> {
         let chips = Self::chips();
+        // The `true` is for `contains_global_bus`
         StarkMachine::new(config, chips, SP1_PROOF_NUM_PV_ELTS, true)
     }
 

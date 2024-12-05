@@ -12,7 +12,8 @@ use strum_macros::{Display, EnumIter};
 use super::{interaction::AirInteraction, BinomialExtension};
 use crate::{lookup::InteractionKind, Word};
 
-/// The scope of an interaction.
+/// Whether an interaction is local to the Chip (data is sent and received in the same Chip), or global to the program
+/// (data is sent and received between different Chips).
 #[derive(
     Debug,
     Clone,

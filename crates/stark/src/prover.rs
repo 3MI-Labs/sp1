@@ -18,7 +18,7 @@ use super::{
     VerifierConstraintFolder,
 };
 use crate::{
-    air::MachineAir, config::ZeroCommitment, lookup::InteractionBuilder, opts::SP1CoreOpts,
+    air::MachineAir, config::ZeroCommitment, lookup::LookupInteractionBuilder, opts::SP1CoreOpts,
     record::MachineRecord, Challenger, DebugConstraintBuilder, MachineChip, MachineProof,
     PackedChallenge, PcsProverData, ProverConstraintFolder, ShardCommitment, ShardMainData,
     ShardProof, StarkVerifyingKey,
@@ -57,7 +57,7 @@ pub trait MachineProver<SC: StarkGenericConfig, A: MachineAir<SC::Val>>:
     /// Setup the preprocessed data into a proving and verifying key.
     fn setup(&self, program: &A::Program) -> (Self::DeviceProvingKey, StarkVerifyingKey<SC>);
 
-    /// Generate the main traces.
+    /// Generate the main traces (as field elt matrices) from the given execution record and interaction scope.
     fn generate_traces(
         &self,
         record: &A::Record,
@@ -68,6 +68,7 @@ pub trait MachineProver<SC: StarkGenericConfig, A: MachineAir<SC::Val>>:
             .iter()
             .filter(|chip| chip.commit_scope() == interaction_scope)
             .collect::<Vec<_>>();
+        // Assert that filtering for the interaction scope leaves some chips to generate trace for.
         assert!(!chips.is_empty());
 
         // For each chip, generate the trace.
@@ -297,7 +298,7 @@ where
     SC: 'static + StarkGenericConfig + Send + Sync,
     A: MachineAir<SC::Val>
         + for<'a> Air<ProverConstraintFolder<'a, SC>>
-        + Air<InteractionBuilder<Val<SC>>>
+        + Air<LookupInteractionBuilder<Val<SC>>>
         + for<'a> Air<VerifierConstraintFolder<'a, SC>>,
     A::Record: MachineRecord<Config = SP1CoreOpts>,
     SC::Val: PrimeField32,
@@ -331,8 +332,10 @@ where
         // Order the chips and traces by trace size (biggest first), and get the ordering map.
         named_traces.sort_by_key(|(name, trace)| (Reverse(trace.height()), name.clone()));
 
+        // Get the PCS from the Prover's configuration.
         let pcs = self.config().pcs();
 
+        // Get the default domains from the PCS for each trace height.
         let domains_and_traces = named_traces
             .iter()
             .map(|(_, trace)| {
@@ -341,13 +344,14 @@ where
             })
             .collect::<Vec<_>>();
 
-        // Commit to the batch of traces.
+        // Commit to the batch of traces using the PCS.
         let (main_commit, main_data) = pcs.commit(domains_and_traces);
 
         // Get the chip ordering.
         let chip_ordering =
             named_traces.iter().enumerate().map(|(i, (name, _))| (name.to_owned(), i)).collect();
 
+        // Get the traces
         let traces = named_traces.into_iter().map(|(_, trace)| trace).collect::<Vec<_>>();
 
         ShardMainData {
@@ -371,6 +375,10 @@ where
         challenger: &mut <SC as StarkGenericConfig>::Challenger,
         global_permutation_challenges: &[SC::Challenge],
     ) -> Result<ShardProof<SC>, Self::Error> {
+        // ======== Prover phase 1: obtain traces of the computation
+        //
+        // This is provided as input in global_data and local_data, so these are destructured into their components.
+
         let (global_traces, global_main_commit, global_main_data, global_chip_ordering) =
             if let Some(global_data) = global_data {
                 let ShardMainData {
@@ -393,6 +401,8 @@ where
             public_values: local_public_values,
         } = local_data;
 
+        // ==== Chip metadata preparation and checks
+
         // Merge the chip ordering and traces from the global and local data.
         let (all_chips_ordering, all_chip_scopes, all_shard_data) = self.merge_shard_traces(
             &global_traces,
@@ -401,39 +411,56 @@ where
             &local_chip_ordering,
         );
 
-        let chips = self.machine().shard_chips_ordered(&all_chips_ordering).collect::<Vec<_>>();
+        // Collect the chips in the current machine
+        let chips = self
+            .machine()
+            .shard_chips_ordered(&all_chips_ordering)
+            .collect::<Vec<&MachineChip<SC, A>>>();
 
+        // Check we have data for each chip
         assert!(chips.len() == all_shard_data.len());
 
+        // ==== Get trace and quotient degrees
+
+        // Get the configuration of the machine
         let config = self.machine().config();
 
-        let degrees =
-            all_shard_data.iter().map(|shard_data| shard_data.trace.height()).collect::<Vec<_>>();
+        // Collect the degrees of each trace polynomial, using the height of the trace as proxy.
+        let degrees: Vec<usize> =
+            all_shard_data.iter().map(|shard_data| shard_data.trace.height()).collect();
 
-        let log_degrees =
-            degrees.iter().map(|degree| log2_strict_usize(*degree)).collect::<Vec<_>>();
+        // Compute the log of the degrees, assuming they are powers of 2.
+        let log_degrees: Vec<usize> =
+            degrees.iter().map(|degree| log2_strict_usize(*degree)).collect();
 
-        let log_quotient_degrees =
-            chips.iter().map(|chip| chip.log_quotient_degree()).collect::<Vec<_>>();
+        // Collect the log of the degree of the quotient polynomial for each chip.
+        let log_quotient_degrees: Vec<usize> =
+            chips.iter().map(|chip| chip.log_quotient_degree()).collect();
 
+        // Get the PCS from the configuration.
         let pcs = config.pcs();
+
+        // Get the default domains for each trace degree from the PCS.
         let trace_domains =
             degrees.iter().map(|degree| pcs.natural_domain_for_degree(*degree)).collect::<Vec<_>>();
+
+        // ======== Prover phase 2: Hash local main commitment and derive permutation challenges
 
         // Observe the main commitment.
         challenger.observe(local_main_commit.clone());
 
-        // Obtain the challenges used for the local permutation argument.
+        // Sample two challenges used for the local permutation argument.
         let mut local_permutation_challenges: Vec<SC::Challenge> = Vec::new();
         for _ in 0..2 {
             local_permutation_challenges.push(challenger.sample_ext_element());
         }
 
-        let permutation_challenges = global_permutation_challenges
+        // Append the local permutation challenges to the global ones given as input
+        let permutation_challenges: Vec<SC::Challenge> = global_permutation_challenges
             .iter()
             .chain(local_permutation_challenges.iter())
             .copied()
-            .collect::<Vec<_>>();
+            .collect();
 
         let packed_perm_challenges = permutation_challenges
             .iter()
@@ -441,24 +468,34 @@ where
             .map(|c| PackedChallenge::<SC>::from_f(*c))
             .collect::<Vec<_>>();
 
+        // ======== Prover phase 3: Generate traces of the permutation checks
+
         // Generate the permutation traces.
-        let ((permutation_traces, prep_traces), cumulative_sums): ((Vec<_>, Vec<_>), Vec<_>) =
-            tracing::debug_span!("generate permutation traces").in_scope(|| {
-                chips
-                    .par_iter()
-                    .zip(all_shard_data.par_iter())
-                    .map(|(chip, shard_data)| {
+        let ((permutation_traces, prep_traces), cumulative_sums): (
+            (Vec<_>, Vec<_>),
+            Vec<[SC::Challenge; 2]>,
+        ) = tracing::debug_span!("generate permutation traces").in_scope(|| {
+            chips
+                .par_iter()
+                .zip(all_shard_data.par_iter())
+                .map(
+                    |(chip, shard_data): (
+                        &&MachineChip<SC, A>,
+                        &MergedProverDataItem<Self::DeviceMatrix>,
+                    )| {
                         let preprocessed_trace =
                             pk.chip_ordering.get(&chip.name()).map(|&index| &pk.traces[index]);
-                        let (perm_trace, global_sum, local_sum) = chip.generate_permutation_trace(
-                            preprocessed_trace,
-                            shard_data.trace,
-                            &permutation_challenges,
-                        );
-                        ((perm_trace, preprocessed_trace), [global_sum, local_sum])
-                    })
-                    .unzip()
-            });
+                        let (permutation_trace, global_sum, local_sum) = chip
+                            .generate_permutation_trace(
+                                preprocessed_trace,
+                                shard_data.trace,
+                                &permutation_challenges,
+                            );
+                        ((permutation_trace, preprocessed_trace), [global_sum, local_sum])
+                    },
+                )
+                .unzip()
+        });
 
         // Compute some statistics.
         for i in 0..chips.len() {
@@ -491,8 +528,6 @@ where
                     })
                     .collect::<Vec<_>>()
             });
-
-        let pcs = config.pcs();
 
         let (permutation_commit, permutation_data) =
             tracing::debug_span!("commit to permutation traces")

@@ -44,7 +44,7 @@ pub trait MachineAir<F: Field>: BaseAir<F> + 'static + Send + Sync {
         None
     }
 
-    /// Specifies whether it's trace should be part of either the global or local commit.
+    /// Specifies whether its trace should be part of either the global or local commit.
     fn commit_scope(&self) -> InteractionScope {
         InteractionScope::Local
     }

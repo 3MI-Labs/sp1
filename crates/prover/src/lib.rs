@@ -638,7 +638,7 @@ impl<C: SP1ProverComponents> SP1Prover<C> {
         // Get the leaf challenger.
         let mut leaf_challenger = self.core_prover.config().challenger();
         vk.vk.observe_into(&mut leaf_challenger);
-        shard_proofs.iter().for_each(|proof| {
+        shard_proofs.iter().for_each(|proof: &ShardProof<BabyBearPoseidon2>| {
             leaf_challenger.observe(proof.commitment.global_main_commit);
             leaf_challenger.observe_slice(&proof.public_values[0..self.core_prover.num_pv_elts()]);
         });

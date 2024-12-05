@@ -30,7 +30,7 @@ pub struct MemoryGlobalChip {
 }
 
 impl MemoryGlobalChip {
-    /// Creates a new memory chip with a certain type.
+    /// Creates a new memory chip of the given kind.
     pub const fn new(kind: MemoryChipType) -> Self {
         Self { kind }
     }

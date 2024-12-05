@@ -1,4 +1,7 @@
-//! An implementation of an exucutor for the SP1 RISC-V zkVM.
+//! An implementation of an executor for the SP1 RISC-V zkVM.
+//!
+//! The role of an "executor" is to run an ELF-encoded program and generate record of events. These events are then
+//! converted into traces by a "machine".
 
 #![warn(clippy::pedantic)]
 #![allow(clippy::similar_names)]

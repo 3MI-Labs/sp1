@@ -66,6 +66,7 @@ pub struct ChipOpenedValues<T> {
     pub log_degree: usize,
 }
 
+/// The values opened during a shard proof, arranged as a Vec of [`ChipOpenedValues`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShardOpenedValues<T> {
     pub chips: Vec<ChipOpenedValues<T>>,
@@ -82,6 +83,7 @@ pub struct ShardProof<SC: StarkGenericConfig> {
     pub commitment: ShardCommitment<Com<SC>>,
     pub opened_values: ShardOpenedValues<Challenge<SC>>,
     pub opening_proof: OpeningProof<SC>,
+    /// The index (?) as a usize of each chip in this shard (as a String).
     pub chip_ordering: HashMap<String, usize>,
     pub public_values: Vec<Val<SC>>,
 }

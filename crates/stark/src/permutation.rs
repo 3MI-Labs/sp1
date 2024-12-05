@@ -1,3 +1,5 @@
+//! Functions used for implementing a permutation check based on `LogUp`.
+
 use std::borrow::Borrow;
 
 use hashbrown::HashMap;
@@ -11,10 +13,10 @@ use strum::IntoEnumIterator;
 
 use crate::{
     air::{InteractionScope, MultiTableAirBuilder},
-    lookup::Interaction,
+    lookup::LookupInteraction,
 };
 
-/// Computes the width of the permutation trace.
+/// Computes the width of the permutation trace by dividing the number of interactions by the batch size and adding 1.
 #[inline]
 #[must_use]
 pub const fn permutation_trace_width(num_interactions: usize, batch_size: usize) -> usize {
@@ -33,8 +35,8 @@ pub fn populate_permutation_row<F: PrimeField, EF: ExtensionField<F>>(
     row: &mut [EF],
     preprocessed_row: &[F],
     main_row: &[F],
-    sends: &[Interaction<F>],
-    receives: &[Interaction<F>],
+    sends: &[LookupInteraction<F>],
+    receives: &[LookupInteraction<F>],
     random_elements: &[EF],
     batch_size: usize,
 ) {
@@ -43,32 +45,46 @@ pub fn populate_permutation_row<F: PrimeField, EF: ExtensionField<F>>(
     // Generate the RLC elements to uniquely identify each item in the looked up tuple.
     let betas = random_elements[1].powers();
 
+    // Chain the interactions into one iterator, with a `true` flag for sends and a `false` for receives, and divide it
+    // into chunks based on the batch size
     let interaction_chunks = &sends
         .iter()
         .map(|int| (int, true))
         .chain(receives.iter().map(|int| (int, false)))
         .chunks(batch_size);
 
-    // Compute the denominators \prod_{i\in B} row_fingerprint(alpha, beta).
+    // Compute the denominators \prod_{i \in B} row_fingerprint(alpha, beta).
+    // denominator = alpha + index + sum_{i=1} beta^i * column_i
     for (value, chunk) in row.iter_mut().zip(interaction_chunks) {
+        // Write the sum to the row
         *value = chunk
             .into_iter()
-            .map(|(interaction, is_send)| {
+            .map(|(interaction, is_send): (&LookupInteraction<F>, bool)| {
                 let mut denominator = alpha;
+                // Make a local copy of the powers of beta.
                 let mut betas = betas.clone();
+                // Offset the denominator by the index of the argument in the lookup table.
                 denominator +=
                     betas.next().unwrap() * EF::from_canonical_usize(interaction.argument_index());
+
+                // Compress the columns from the preprocessed and main rows using the next power of beta
+                // This computes a randomized "fingerprint" of the row
                 for (columns, beta) in interaction.values.iter().zip(betas) {
                     denominator += beta * columns.apply::<F, F>(preprocessed_row, main_row);
                 }
+
+                // Get the multiplicity of the lookup event
                 let mut mult = interaction.multiplicity.apply::<F, F>(preprocessed_row, main_row);
 
+                // Flip the multiplicity in the case of a `send` so that it cancels out a matching `receive`.
                 if !is_send {
                     mult = -mult;
                 }
 
+                // Return the term for this interaction
                 EF::from_base(mult) / denominator
             })
+            // Sum the terms from all the interactions
             .sum();
     }
 }
@@ -76,12 +92,12 @@ pub fn populate_permutation_row<F: PrimeField, EF: ExtensionField<F>>(
 /// Returns the sends, receives, and permutation trace width grouped by scope.
 #[allow(clippy::type_complexity)]
 pub fn get_grouped_maps<F: Field>(
-    sends: &[Interaction<F>],
-    receives: &[Interaction<F>],
+    sends: &[LookupInteraction<F>],
+    receives: &[LookupInteraction<F>],
     batch_size: usize,
 ) -> (
-    HashMap<InteractionScope, Vec<Interaction<F>>>,
-    HashMap<InteractionScope, Vec<Interaction<F>>>,
+    HashMap<InteractionScope, Vec<LookupInteraction<F>>>,
+    HashMap<InteractionScope, Vec<LookupInteraction<F>>>,
     HashMap<InteractionScope, usize>,
 ) {
     // Create a hashmap of scope -> vec<send interactions>.
@@ -89,7 +105,7 @@ pub fn get_grouped_maps<F: Field>(
     sends.sort_by_key(|k| k.scope);
     let grouped_sends: HashMap<_, _> = sends
         .iter()
-        .chunk_by(|int| int.scope)
+        .chunk_by(|interaction| interaction.scope)
         .into_iter()
         .map(|(k, values)| (k, values.cloned().collect_vec()))
         .collect();
@@ -105,12 +121,15 @@ pub fn get_grouped_maps<F: Field>(
         .collect();
 
     // Create a hashmap of scope -> permutation trace width.
-    let grouped_widths = InteractionScope::iter()
+    let grouped_widths: HashMap<InteractionScope, usize> = InteractionScope::iter()
         .map(|scope| {
             let empty_vec = vec![];
-            let sends = grouped_sends.get(&scope).unwrap_or(&empty_vec);
-            let receives = grouped_receives.get(&scope).unwrap_or(&empty_vec);
-            (scope, permutation_trace_width(sends.len() + receives.len(), batch_size))
+            let sends_in_scope = grouped_sends.get(&scope).unwrap_or(&empty_vec);
+            let receives_in_scope = grouped_receives.get(&scope).unwrap_or(&empty_vec);
+            (
+                scope,
+                permutation_trace_width(sends_in_scope.len() + receives_in_scope.len(), batch_size),
+            )
         })
         .collect();
 
@@ -122,40 +141,48 @@ pub fn get_grouped_maps<F: Field>(
 /// The permutation trace has `(N+1)*EF::NUM_COLS` columns, where N is the number of interactions in
 /// the chip.
 pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
-    sends: &[Interaction<F>],
-    receives: &[Interaction<F>],
+    sends: &[LookupInteraction<F>],
+    receives: &[LookupInteraction<F>],
     preprocessed: Option<&RowMajorMatrix<F>>,
-    main: &RowMajorMatrix<F>,
-    random_elements: &[EF],
+    main_trace: &RowMajorMatrix<F>,
+    global_and_local_permutation_challenges: &[EF],
     batch_size: usize,
 ) -> (RowMajorMatrix<EF>, EF, EF) {
+    // Group the interactions that the chip makes (and the width of the resulting permutation) based on their scope.
     let (grouped_sends, grouped_receives, grouped_widths) =
         get_grouped_maps(sends, receives, batch_size);
 
-    let height = main.height();
+    // Get height and width information
+    let height = main_trace.height();
     let permutation_trace_width = grouped_widths.values().sum::<usize>();
+
+    // Initialize the trace and the sums to zero.
     let mut permutation_trace = RowMajorMatrix::new(
         vec![EF::zero(); permutation_trace_width * height],
         permutation_trace_width,
     );
-
     let mut global_cumulative_sum = EF::zero();
     let mut local_cumulative_sum = EF::zero();
 
+    // Loop over the two interaction scopes.
     for scope in InteractionScope::iter() {
+        // Get the send and receive interactions for the current scope.
         let empty_vec = vec![];
         let sends = grouped_sends.get(&scope).unwrap_or(&empty_vec);
         let receives = grouped_receives.get(&scope).unwrap_or(&empty_vec);
 
+        // Move to the next scope if there are no interactions in this one.
         if sends.is_empty() && receives.is_empty() {
             continue;
         }
 
+        // Get the permutation challenges from the input based on the current scope.
         let random_elements = match scope {
-            InteractionScope::Global => &random_elements[0..2],
-            InteractionScope::Local => &random_elements[2..4],
+            InteractionScope::Global => &global_and_local_permutation_challenges[0..2],
+            InteractionScope::Local => &global_and_local_permutation_challenges[2..4],
         };
 
+        // Compute the ranges of columns to be used for the current scope.
         let row_range = match scope {
             InteractionScope::Global => {
                 0..*grouped_widths.get(&InteractionScope::Global).expect("Expected global scope")
@@ -169,13 +196,15 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
             }
         };
 
-        // Compute the permutation trace values in parallel.
+        // Populate the permutation trace values in parallel
+        // This uses the `LogUp` strategy to compress the columns into a single field element (using powers of the
+        // second random element) and evaluate the logarithmic derivative at X = alpha
         match preprocessed {
             Some(prep) => {
                 permutation_trace
                     .par_rows_mut()
                     .zip_eq(prep.par_row_slices())
-                    .zip_eq(main.par_row_slices())
+                    .zip_eq(main_trace.par_row_slices())
                     .for_each(|((row, prep_row), main_row)| {
                         populate_permutation_row(
                             &mut row[row_range.start..row_range.end],
@@ -189,7 +218,7 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
                     });
             }
             None => {
-                permutation_trace.par_rows_mut().zip_eq(main.par_row_slices()).for_each(
+                permutation_trace.par_rows_mut().zip_eq(main_trace.par_row_slices()).for_each(
                     |(row, main_row)| {
                         populate_permutation_row(
                             &mut row[row_range.start..row_range.end],
@@ -206,14 +235,15 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
         }
 
         let zero = EF::zero();
-        let cumulative_sums = permutation_trace
+        let cumulative_sums: Vec<EF> = permutation_trace
             .par_rows_mut()
             .map(|row| row[row_range.start..row_range.end - 1].iter().copied().sum::<EF>())
-            .collect::<Vec<_>>();
+            .collect();
 
-        let cumulative_sums =
-            cumulative_sums.into_par_iter().scan(|a, b| *a + *b, zero).collect::<Vec<_>>();
+        let cumulative_sums: Vec<EF> =
+            cumulative_sums.into_par_iter().scan(|a, b| *a + *b, zero).collect();
 
+        // Save the last cumulative sum depending on the current scope
         match scope {
             InteractionScope::Global => {
                 global_cumulative_sum = *cumulative_sums.last().unwrap();
@@ -223,6 +253,7 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
             }
         }
 
+        // Write the cumulative sum in the last cell of each row
         permutation_trace.par_rows_mut().zip_eq(cumulative_sums.clone().into_par_iter()).for_each(
             |(row, cumulative_sum)| {
                 row[row_range.end - 1] = cumulative_sum;
@@ -230,6 +261,7 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
         );
     }
 
+    // Return the trace, as a matrix, and the cumulative sums
     (permutation_trace, global_cumulative_sum, local_cumulative_sum)
 }
 
@@ -241,8 +273,8 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
 ///     - The running sum column ends at the (currently) given cumalitive sum.
 #[allow(clippy::too_many_lines)]
 pub fn eval_permutation_constraints<'a, F, AB>(
-    sends: &[Interaction<F>],
-    receives: &[Interaction<F>],
+    sends: &[LookupInteraction<F>],
+    receives: &[LookupInteraction<F>],
     batch_size: usize,
     builder: &mut AB,
 ) where

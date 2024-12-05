@@ -38,8 +38,10 @@ impl<F: PrimeField32> MachineAir<F> for CpuChip {
         input: &ExecutionRecord,
         _: &mut ExecutionRecord,
     ) -> RowMajorMatrix<F> {
+        // Zero-initialize the values of the trace
         let mut values = zeroed_f_vec(input.cpu_events.len() * NUM_CPU_COLS);
 
+        // Call `event_to_row()` on each CPU event to write into the appropriate row of the trace
         let chunk_size = std::cmp::max(input.cpu_events.len() / num_cpus::get(), 1);
         values.chunks_mut(chunk_size * NUM_CPU_COLS).enumerate().par_bridge().for_each(
             |(i, rows)| {

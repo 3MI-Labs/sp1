@@ -1,29 +1,20 @@
+//! Several types to hold the columns relevant to each memory access.
+//!
+//! The core type is [MemoryAccessCols] which contains the access's information (value, timestamp, etc.). Three wrapper
+//! types represent the possible kinds of access:
+//!
+//! - Read
+//! - Write
+//! - Read-Write
+//!
+//! Also, the [MemoryCols] trait, implemented for the different memory columns types, which defines function signatures
+//! to access the fields common across the four access types.
+
 use sp1_derive::AlignedBorrow;
 use sp1_stark::Word;
 
-/// Memory read access.
-#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct MemoryReadCols<T> {
-    pub access: MemoryAccessCols<T>,
-}
-
-/// Memory write access.
-#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct MemoryWriteCols<T> {
-    pub prev_value: Word<T>,
-    pub access: MemoryAccessCols<T>,
-}
-
-/// Memory read-write access.
-#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
-#[repr(C)]
-pub struct MemoryReadWriteCols<T> {
-    pub prev_value: Word<T>,
-    pub access: MemoryAccessCols<T>,
-}
-
+/// The core memory access columns; this doesn't look like it should be accessed directly, but instead should access
+/// through the [MemoryCols] trait functions.
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MemoryAccessCols<T> {
@@ -48,6 +39,31 @@ pub struct MemoryAccessCols<T> {
     /// This column is the most significant 8 bit limb of current access timestamp - prev access
     /// timestamp.
     pub diff_8bit_limb: T,
+}
+
+/// Memory read access; it contains only an inner [MemoryAccessCols] field.
+#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MemoryReadCols<T> {
+    pub access: MemoryAccessCols<T>,
+}
+
+/// Memory write access; it contains an inner [MemoryAccessCols] field, as well as the previous value that was
+/// overwritten by this write access.
+#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MemoryWriteCols<T> {
+    pub prev_value: Word<T>,
+    pub access: MemoryAccessCols<T>,
+}
+
+/// Memory read-write access; it contains an inner [MemoryAccessCols] field, as well as the previous value that was
+/// overwritten by this write access after being read.
+#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MemoryReadWriteCols<T> {
+    pub prev_value: Word<T>,
+    pub access: MemoryAccessCols<T>,
 }
 
 /// The common columns for all memory access types.
