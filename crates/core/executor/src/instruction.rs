@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::opcode::Opcode;
 
-/// RISC-V 32IM Instruction.
+/// A RISC-V 32IM Instruction
 ///
 /// The structure of the instruction differs from the RISC-V ISA. We do not encode the instructions
 /// as 32-bit words, but instead use a custom encoding that is more friendly to decode in the

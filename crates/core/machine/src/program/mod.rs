@@ -35,7 +35,8 @@ pub struct ProgramPreprocessedCols<T> {
     pub selectors: OpcodeSelectorCols<T>,
 }
 
-/// The real columns of the trace for the [ProgramChip].
+/// The real columns of the trace for the [ProgramChip], recording the shard index in which an instruction is called and
+/// its multiplicity.
 #[derive(AlignedBorrow, Clone, Copy, Default)]
 #[repr(C)]
 pub struct ProgramMultiplicityCols<T> {
@@ -44,6 +45,10 @@ pub struct ProgramMultiplicityCols<T> {
 }
 
 /// The chip which handles the execution of the program.
+///
+/// - Preprocessed trace: populated with a [`Program`] object by appending a row for every
+///   [`Instruction`](sp1_core_executor::Instruction).
+/// - Dependencies: none.
 #[derive(Default)]
 pub struct ProgramChip;
 
@@ -67,24 +72,26 @@ impl<F: PrimeField> MachineAir<F> for ProgramChip {
         NUM_PROGRAM_PREPROCESSED_COLS
     }
 
-    /// Generates the preprocessed trace of the program chip for the given [Program].
+    /// Generates the preprocessed trace of the program chip for the given [`Program`] by populating a row of
+    /// [`ProgramPreprocessedCols`] for each [`Instruction`](sp1_core_executor::Instruction) in the [`Program`].
     fn generate_preprocessed_trace(&self, program: &Self::Program) -> Option<RowMajorMatrix<F>> {
         debug_assert!(
             !program.instructions.is_empty() || program.preprocessed_shape.is_some(),
             "empty program"
         );
 
-        let mut rows = program
+        let mut preprocessed_rows: Vec<[F; 37]> = program
             // Enumerate over the instructions of the given program
             .instructions
             .iter()
             .enumerate()
-            /* For each instruction:
-               1.
-            */
+            // Map each instruction to a populated row for the preprocessed trace and collect in a Vec
             .map(|(i, &instruction)| {
+                // ... starting from base, increment by 4 to maintain alignment,
                 let pc = program.pc_base + (i as u32 * 4);
+                // ... initialise an empty row
                 let mut row = [F::zero(); NUM_PROGRAM_PREPROCESSED_COLS];
+                // ... populate the row with the program counter and the corresponding instruction
                 let cols: &mut ProgramPreprocessedCols<F> = row.as_mut_slice().borrow_mut();
                 cols.pc = F::from_canonical_u32(pc);
                 cols.instruction.populate(instruction);
@@ -92,36 +99,38 @@ impl<F: PrimeField> MachineAir<F> for ProgramChip {
 
                 row
             })
-            .collect::<Vec<_>>();
+            .collect();
 
-        // Pad the trace to a power of two depending on the proof shape in `input`.
+        // Pad the trace to a power of two with all-zero rows depending on the proof shape in `program`.
         pad_rows_fixed(
-            &mut rows,
+            &mut preprocessed_rows,
             || [F::zero(); NUM_PROGRAM_PREPROCESSED_COLS],
             program.fixed_log2_rows::<F, _>(self),
         );
 
-        // Convert the trace to a row major matrix.
-        let trace = RowMajorMatrix::new(
-            rows.into_iter().flatten().collect::<Vec<_>>(),
+        // Convert the Vec of rows to a row-major trace matrix
+        let preprocessed_trace = RowMajorMatrix::new(
+            preprocessed_rows.into_iter().flatten().collect::<Vec<_>>(),
             NUM_PROGRAM_PREPROCESSED_COLS,
         );
 
-        Some(trace)
+        Some(preprocessed_trace)
     }
 
+    /// A [`ProgramChip`] doesn't depend on other chips, so this doesn't do anything.
     fn generate_dependencies(&self, _input: &ExecutionRecord, _output: &mut ExecutionRecord) {
         // Do nothing since this chip has no dependencies.
     }
 
+    /// Generates the trace of the program chip for the given [`ExecutionRecord`] by populating a row of
+    /// [`ProgramMultiplicityCols`] for each [`Instruction`](sp1_core_executor::Instruction) in the
+    /// [`ExecutionRecord::program`] pointed to by `input`.
     fn generate_trace(
         &self,
         input: &ExecutionRecord,
         _output: &mut ExecutionRecord,
     ) -> RowMajorMatrix<F> {
-        // Generate the trace rows for each event.
-
-        // Collect the number of times each instruction is called from the cpu events.
+        // Count the number of times each instruction is called from the list of CPU events.
         // Store it as a map of PC -> count.
         let mut instruction_counts = HashMap::new();
         input.cpu_events.iter().for_each(|event| {
@@ -129,12 +138,15 @@ impl<F: PrimeField> MachineAir<F> for ProgramChip {
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
 
-        let mut rows = input
+        let mut trace_rows: Vec<[F; 2]> = input
+            // Enumerate over the instructions in the input record's program.
             .program
             .instructions
             .clone()
             .into_iter()
             .enumerate()
+            // Populate the trace row with the multiplicity of the instruction based on the count done above, or with 0
+            // if the instruction isn't called by the CPU events.
             .map(|(i, _)| {
                 let pc = input.program.pc_base + (i as u32 * 4);
                 let mut row = [F::zero(); NUM_PROGRAM_MULT_COLS];
@@ -144,16 +156,20 @@ impl<F: PrimeField> MachineAir<F> for ProgramChip {
                     F::from_canonical_usize(*instruction_counts.get(&pc).unwrap_or(&0));
                 row
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         // Pad the trace to a power of two depending on the proof shape in `input`.
         pad_rows_fixed(
-            &mut rows,
+            &mut trace_rows,
             || [F::zero(); NUM_PROGRAM_MULT_COLS],
             input.fixed_log2_rows::<F, _>(self),
         );
 
-        RowMajorMatrix::new(rows.into_iter().flatten().collect::<Vec<_>>(), NUM_PROGRAM_MULT_COLS)
+        // Convert the Vec of trace rows to a row-major trace matrix and return.
+        RowMajorMatrix::new(
+            trace_rows.into_iter().flatten().collect::<Vec<_>>(),
+            NUM_PROGRAM_MULT_COLS,
+        )
     }
 
     fn included(&self, _: &Self::Record) -> bool {
@@ -162,6 +178,7 @@ impl<F: PrimeField> MachineAir<F> for ProgramChip {
 }
 
 impl<F> BaseAir<F> for ProgramChip {
+    /// The number of multiplicity columns for a [`ProgramChip`].
     fn width(&self) -> usize {
         NUM_PROGRAM_MULT_COLS
     }

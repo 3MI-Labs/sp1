@@ -13,7 +13,7 @@
 )]
 #![warn(unused_extern_crates)]
 
-//! The `sp1-core-machine` crate containing an implementation of an SP1 machine.
+//! # SP1 Machine
 //!
 //! The role of an SP1 _machine_ is to convert records of events, produced by an SP1 _executor_.
 
