@@ -3824,6 +3824,7 @@ dependencies = [
  "alloy-primitives 0.8.14",
  "curve25519-dalek",
  "curve25519-dalek-ng 4.1.1 (git+https://github.com/sp1-patches/curve25519-dalek-ng?tag=curve25519_dalek_ng-v4.1.1-patch-v1)",
+ "ecdsa 0.16.9 (git+https://github.com/sp1-patches/signatures?branch=ecdsa-v0.16.9-patch-v4.0.0-rc.2)",
  "ed25519-consensus",
  "ed25519-dalek",
  "k256",
@@ -5901,7 +5902,7 @@ dependencies = [
 [[package]]
 name = "sp1-lib"
 version = "4.0.0-rc.1"
-source = "git+https://github.com/succinctlabs/sp1.git?branch=v4.0.0-rc.2#9bb49f4c6a5757c597e5b13a3e9e8a2b6e18cd41"
+source = "git+https://github.com/succinctlabs/sp1.git?branch=v4.0.0-rc.2#e48676d15b83c9349439e61ad6e2803f270c85e7"
 dependencies = [
  "bincode",
  "serde",

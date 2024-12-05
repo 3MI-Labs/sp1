@@ -6,6 +6,7 @@ use alloy_primitives::{address, bytes, hex};
 use alloy_primitives::{B256, B512};
 use curve25519_dalek::edwards::CompressedEdwardsY as CompressedEdwardsY_dalek;
 use curve25519_dalek_ng::edwards::CompressedEdwardsY as CompressedEdwardsY_dalek_ng;
+use ecdsa_core::RecoveryId as ecdsaRecoveryId;
 use ed25519_consensus::{
     Signature as Ed25519ConsensusSignature, VerificationKey as Ed25519ConsensusVerificationKey,
 };
@@ -13,7 +14,7 @@ use ed25519_dalek::{
     Signature as Ed25519DalekSignature, Verifier, VerifyingKey as Ed25519DalekVerifyingKey,
 };
 use p256::{
-    ecdsa::{Signature, SigningKey, VerifyingKey},
+    ecdsa::{Signature as P256Signature, SigningKey, VerifyingKey as P256VerifyingKey},
     elliptic_curve::rand_core::OsRng,
 };
 
@@ -150,13 +151,22 @@ fn test_p256_patch() {
     println!("message_prehash: {:?}", message_prehash);
 
     let signing_key = SigningKey::random(&mut OsRng);
-    let (signature, recid) = signing_key.sign_prehash_recoverable(&message_prehash).unwrap();
+    let (mut signature, recid) = signing_key.sign_prehash_recoverable(&message_prehash).unwrap();
     println!("signature: {:?}", signature);
     println!("recid: {:?}", recid);
 
+    let mut recid_byte = recid.to_byte();
+
+    if let Some(sig_normalized) = signature.normalize_s() {
+        signature = sig_normalized;
+        recid_byte ^= 1;
+    }
+
+    let recid = ecdsaRecoveryId::from_byte(recid_byte).unwrap();
+
     println!("cycle-tracker-start: p256 recovery");
     let recovered_key =
-        VerifyingKey::recover_from_prehash(&message_prehash, &signature, recid).unwrap();
+        P256VerifyingKey::recover_from_prehash(&message_prehash, &signature, recid).unwrap();
     println!("cycle-tracker-end: p256 recovery");
     println!("recovered_key: {:?}", recovered_key);
 }
@@ -245,7 +255,8 @@ pub fn main() {
     test_ed25519_dalek();
     test_ed25519_consensus();
 
-    test_p256_patch();
     test_k256_patch();
+    test_p256_patch();
+
     test_secp256k1_patch();
 }
