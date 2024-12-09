@@ -1,3 +1,8 @@
+//! # The `program` Module
+//!
+//! This module defines the `ProgramChip` type whose trace counts the multiplicities of instruction calls inside a
+//! [`Program`].
+
 use core::{
     borrow::{Borrow, BorrowMut},
     mem::size_of,
@@ -46,9 +51,12 @@ pub struct ProgramMultiplicityCols<T> {
 
 /// The chip which handles the execution of the program.
 ///
-/// - Preprocessed trace: populated with a [`Program`] object by appending a row for every
+/// - Virtual trace: populated from a [`Program`] object by appending a row for every
 ///   [`Instruction`](sp1_core_executor::Instruction).
 /// - Dependencies: none.
+/// - Real trace: populated from an [`ExecutionRecord`] object by counting the multiplicity of each
+///   [`Instruction`](sp1_core_executor::Instruction) in the record and appending a trace row (containing the shard
+///   index and the multiplicity value) for each [`Instruction`](sp1_core_executor::Instruction).
 #[derive(Default)]
 pub struct ProgramChip;
 

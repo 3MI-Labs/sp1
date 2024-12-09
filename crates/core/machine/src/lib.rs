@@ -15,7 +15,10 @@
 
 //! # SP1 Machine
 //!
-//! The role of an SP1 _machine_ is to convert records of events, produced by an SP1 _executor_.
+//! The role of an SP1 _machine_ is to convert records of events, produced by an SP1 _executor_. It contains the
+//! following "chips":
+//! - [`program::ProgramChip`]: counts multiplicities of instruction calls during the execution of a
+//!       [`Program`](sp1_core_executor::Program).
 
 pub mod air;
 pub mod alu;
