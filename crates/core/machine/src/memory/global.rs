@@ -103,30 +103,43 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
         input: &ExecutionRecord,
         _output: &mut ExecutionRecord,
     ) -> RowMajorMatrix<F> {
+        // Get the memory events relevant to this chip's kind.
         let mut memory_events = match self.kind {
             MemoryChipType::Initialize => input.global_memory_initialize_events.clone(),
             MemoryChipType::Finalize => input.global_memory_finalize_events.clone(),
         };
 
+        // Get the bits of the last address to be initialized / finalized in the previous shard.
         let previous_addr_bits = match self.kind {
             MemoryChipType::Initialize => input.public_values.previous_init_addr_bits,
             MemoryChipType::Finalize => input.public_values.previous_finalize_addr_bits,
         };
 
+        // Process the memory events in increasing address order, populating rows for the trace
+        // table based on each event's data.
         memory_events.sort_by_key(|event| event.addr);
         let mut rows: Vec<[F; NUM_MEMORY_INIT_COLS]> = memory_events
             .par_iter()
             .map(|event| {
+                // De-structure the memory event.
                 let MemoryInitializeFinalizeEvent { addr, value, shard, timestamp, used } =
                     event.to_owned();
 
+                // Initialise an empty row for the trace table and cast its reference into columns
                 let mut row = [F::zero(); NUM_MEMORY_INIT_COLS];
                 let cols: &mut MemoryInitCols<F> = row.as_mut_slice().borrow_mut();
+
+                // The address as a field element
                 cols.addr = F::from_canonical_u32(addr);
+                // The bit decomposition of the address
                 cols.addr_bits.populate(addr);
+                // The shard number as a field element
                 cols.shard = F::from_canonical_u32(shard);
+                // The timestamp of the event as a field element
                 cols.timestamp = F::from_canonical_u32(timestamp);
+                // The bits of the value of the access, as an array of field elements
                 cols.value = array::from_fn(|i| F::from_canonical_u32((value >> i) & 1));
+                // Whether the access is used
                 cols.is_real = F::from_canonical_u32(used);
 
                 row
@@ -136,31 +149,61 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
         for i in 0..memory_events.len() {
             let addr = memory_events[i].addr;
             let cols: &mut MemoryInitCols<F> = rows[i].as_mut_slice().borrow_mut();
+
+            // If this is the first row ...
             if i == 0 {
+                // Recompose as u32 the last initialised / finalised address in the previous shard.
                 let prev_addr = previous_addr_bits
                     .iter()
                     .enumerate()
                     .map(|(j, bit)| bit * (1 << j))
                     .sum::<u32>();
+
+                // Record whether the previous address is 0x00, as a flag and the inverse of the
+                // address.
                 cols.is_prev_addr_zero.populate(prev_addr);
+
+                // Record whether the previous address is 0x00, as a boolean.
                 cols.is_first_comp = F::from_bool(prev_addr != 0);
+
+                // If the last address from the previous shard is nonzero ...
                 if prev_addr != 0 {
+                    // Check that the address of this first event in this chip is strictly bigger
+                    // than the last address of the previous shard. Combined with the sorting of
+                    // `memory_events`, this ensures that all the addresses in this chip are
+                    // strictly higher than the last initialised or finalised address of the
+                    // previous shard.
                     debug_assert!(prev_addr < addr, "prev_addr {} < addr {}", prev_addr, addr);
+
+                    // Bit-decompose the address
                     let addr_bits: [_; 32] = array::from_fn(|i| (addr >> i) & 1);
+
+                    // Populate the assertion columns for the comparison
                     cols.lt_cols.populate(&previous_addr_bits, &addr_bits);
                 }
             }
+
+            // If this is not the first row ...
             if i != 0 {
+                // Whether the previous memory event was used in the computation.
                 let prev_is_real = memory_events[i - 1].used;
+                // Record whether the previous row was a real memory access.
                 cols.is_next_comp = F::from_canonical_u32(prev_is_real);
+                // Read the address of the previous event and assert that it's different from the
+                // current one. This must be true because we're initialising or finalising memory so
+                // it's not allowed to do that for the same address twice.
                 let previous_addr = memory_events[i - 1].addr;
                 assert_ne!(previous_addr, addr);
 
+                // Bit-decompose the current event's and the previous event's addresses.
                 let addr_bits: [_; 32] = array::from_fn(|i| (addr >> i) & 1);
                 let prev_addr_bits: [_; 32] = array::from_fn(|i| (previous_addr >> i) & 1);
+
+                // Populate the assertion columns for the comparison
                 cols.lt_cols.populate(&prev_addr_bits, &addr_bits);
             }
 
+            // Raise a flag if this row contains the last event of this execution record.
             if i == memory_events.len() - 1 {
                 cols.is_last_addr = F::one();
             }
@@ -222,6 +265,10 @@ pub struct MemoryInitCols<T: Copy> {
     pub is_prev_addr_zero: IsZeroOperation<T>,
 
     /// Auxiliary column, equal to `(1 - is_prev_addr_zero.result) * is_first_row`.
+    ///
+    /// Alternatively, an auxiliary column which indicates whether this chip is inside the first
+    /// computation trace, decided based on whether, during the first memory event, the last
+    /// previously initialised of finalised address was zero in the previous shard
     pub is_first_comp: T,
 
     /// A flag to indicate the last non-padded address. An auxiliary column needed for degree 3.
