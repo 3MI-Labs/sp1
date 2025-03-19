@@ -266,9 +266,11 @@ pub struct MemoryInitCols<T: Copy> {
 
     /// Auxiliary column, equal to `(1 - is_prev_addr_zero.result) * is_first_row`.
     ///
-    /// Alternatively, an auxiliary column which indicates whether this chip is inside the first
-    /// computation trace, decided based on whether, during the first memory event, the last
-    /// previously initialised of finalised address was zero in the previous shard
+    /// Alternatively, an auxiliary column which indicates whether this row is the first row for
+    /// which a comparison constrain needs to be checked, decided based on whether, during the first
+    /// memory event, the last previously initialised of finalised address was zero in the previous
+    /// shard. Since this is only set for the first row of the trace, it is expected to be equal to
+    /// the formula given above.
     pub is_first_comp: T,
 
     /// A flag to indicate the last non-padded address. An auxiliary column needed for degree 3.
@@ -290,10 +292,12 @@ where
 
         // Constrain that `local.is_real` is boolean.
         builder.assert_bool(local.is_real);
+        // Constrain that the 32 field elts of `local.value` are all bits.
         for i in 0..32 {
             builder.assert_bool(local.value[i]);
         }
 
+        // Bit recompose the 4 bytes of the access's value
         let mut byte1 = AB::Expr::zero();
         let mut byte2 = AB::Expr::zero();
         let mut byte3 = AB::Expr::zero();
@@ -350,7 +354,8 @@ where
             );
         }
 
-        // Canonically decompose the address into bits so we can do comparisons.
+        // Perform a BabyBear range check on the address using its bit comparison conditioned on the
+        // `is_real` field. The `range_check()` verifies the validity of the bit decomposition.
         BabyBearBitDecomposition::<AB::F>::range_check(
             builder,
             local.addr,
@@ -379,7 +384,7 @@ where
 
         // Make assertions for the initial comparison.
 
-        // We want to constrain that the `adrr` in the first row is larger than the previous
+        // We want to constrain that the `addr` in the first row is larger than the previous
         // initialized/finalized address, unless the previous address is zero. Since the previous
         // address is either zero or constrained by a different shard, we know it's an element of
         // the field, so we can get an element from the bit decomposition with no concern for
@@ -387,11 +392,13 @@ where
 
         let local_addr_bits = local.addr_bits.bits;
 
+        // Build the array of public values and cast it as a reference
         let public_values_array: [AB::Expr; SP1_PROOF_NUM_PV_ELTS] =
             array::from_fn(|i| builder.public_values()[i].into());
         let public_values: &PublicValues<Word<AB::Expr>, AB::Expr> =
             public_values_array.as_slice().borrow();
 
+        // Get the bits of the previous shard's last address based on this chip's kind
         let prev_addr_bits = match self.kind {
             MemoryChipType::Initialize => &public_values.previous_init_addr_bits,
             MemoryChipType::Finalize => &public_values.previous_finalize_addr_bits,
@@ -411,7 +418,11 @@ where
         IsZeroOperation::<AB::F>::eval(builder, prev_addr, local.is_prev_addr_zero, is_first_row);
 
         // Constrain the is_first_comp column.
+        // 1. `is_first_comp` must always be Boolean.
         builder.assert_bool(local.is_first_comp);
+        // 2. In the first row `is_first_comp` can be 1 only if the previous shard's last address
+        //    was _not_ 0x00. That is, this row's address should be compared to the previous shard's
+        //    last address only if that previous one was not 0x00.
         builder
             .when_first_row()
             .assert_eq(local.is_first_comp, AB::Expr::one() - local.is_prev_addr_zero.result);
@@ -469,7 +480,10 @@ where
 
         // Constrain the last address bits to be equal to the corresponding `last_addr_bits` value.
         for (local_bit, pub_bit) in local.addr_bits.bits.iter().zip(last_addr_bits.iter()) {
+            // Cyprien: I don't understand this constraint on the last row of the builder.
             builder.when_last_row().when(local.is_real).assert_eq(*local_bit, pub_bit.clone());
+            // This transition constraint makes more sense, since the row with `is_last_addr` set to
+            // 1 is unlikely to be the last row of the trace.
             builder
                 .when_transition()
                 .when(local.is_last_addr)
