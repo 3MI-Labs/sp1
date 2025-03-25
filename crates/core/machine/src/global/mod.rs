@@ -27,30 +27,55 @@ use crate::{
 };
 use sp1_derive::AlignedBorrow;
 
+/// The number of [`GlobalCols`] columns in the trace table for the [`GlobalChip`].
 const NUM_GLOBAL_COLS: usize = size_of::<GlobalCols<u8>>();
 
-/// Creates the column map for the CPU.
-const fn make_col_map() -> GlobalCols<usize> {
+// /// Creates a constant column map for the [`GlobalChip`].
+// const fn make_col_map() -> GlobalCols<usize>
+
+/// The column map for the [`GlobalChip`].
+///
+/// This maps each column of [`GlobalCols`] into its index.
+const GLOBAL_COL_MAP: GlobalCols<usize> = {
     let indices_arr = indices_arr::<NUM_GLOBAL_COLS>();
     unsafe { transmute::<[usize; NUM_GLOBAL_COLS], GlobalCols<usize>>(indices_arr) }
-}
+};
 
-const GLOBAL_COL_MAP: GlobalCols<usize> = make_col_map();
-
+/// The index of the first column of the initial digest within [`GlobalCols`].
 pub const GLOBAL_INITIAL_DIGEST_POS: usize = GLOBAL_COL_MAP.accumulation.initial_digest[0].0[0];
 
+/// A hard-coded copy of [`GLOBAL_INITIAL_DIGEST_POS`], which is the index of the first column of
+/// the initial digest within [`GlobalCols`].
 pub const GLOBAL_INITIAL_DIGEST_POS_COPY: usize = 377;
 
 #[repr(C)]
+/// A struct wrapping an array of `usize` with as many columns as there are in [`GlobalCols`] before
+/// the start of the initial digest of the accumulator.
 pub struct Ghost {
     pub v: [usize; GLOBAL_INITIAL_DIGEST_POS_COPY],
 }
 
 #[derive(Default)]
+/// TODO: The chip responsible for the global interactions of an executions.
+///
+/// These are the interactions emitted between different shards.
 pub struct GlobalChip;
 
 #[derive(AlignedBorrow)]
 #[repr(C)]
+/// The columns of the trace table of the [`GlobalChip`].
+///
+/// - The `message` is the content of the interaction.
+/// - The `kind` indicates whether the interaction concerns memory, or something else. TODO: find
+///   more information on the kind.
+/// - The `interaction` contains values used to compute the "global interaction elliptic curve
+///   digest"
+/// - `is_receive` indicates whether this interaction was received by the chip who spawned it.
+/// - `is_send` indicates whether this interaction was sent by the chip who spawned it.
+/// - `is_real` indicates whether this is a real interaction in the program (and whether it should
+///   be constrained?).
+/// - `accumulation` contains more values used to compute the "global interaction elliptic curve
+///   digest".
 pub struct GlobalCols<T: Copy> {
     pub message: [T; 7],
     pub kind: T,

@@ -23,6 +23,7 @@ pub use sp1_primitives::consts::{
     words_to_bytes_le_vec,
 };
 
+/// Returns the array \[0usize, 1usize, ..., N\] as a constant.
 pub const fn indices_arr<const N: usize>() -> [usize; N] {
     let mut indices_arr = [0; N];
     let mut i = 0;
