@@ -235,8 +235,8 @@ impl From<MemoryWriteRecord> for MemoryRecordEnum {
 pub struct MemoryLocalEvent {
     /// The address.
     pub addr: u32,
-    /// The initial memory access.
+    /// The initial memory access to the address during this shard.
     pub initial_mem_access: MemoryRecord,
-    /// The final memory access.
+    /// The final memory access to the address during this shard.
     pub final_mem_access: MemoryRecord,
 }

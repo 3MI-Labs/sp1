@@ -24,7 +24,8 @@ use sp1_stark::{
 };
 use std::array;
 
-/// A memory chip that can initialize or finalize values in memory.
+/// A memory chip that can initialize or finalize values in global memory, i.e. across different
+/// shards.
 pub struct MemoryGlobalChip {
     pub kind: MemoryChipType,
 }

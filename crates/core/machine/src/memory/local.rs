@@ -60,6 +60,7 @@ pub struct MemoryLocalCols<T: Copy> {
     memory_local_entries: [SingleMemoryLocal<T>; NUM_LOCAL_MEMORY_ENTRIES_PER_ROW],
 }
 
+/// A shard-local memory chip
 pub struct MemoryLocalChip {}
 
 impl MemoryLocalChip {
@@ -203,11 +204,14 @@ where
             // Constrain that `local.is_real` is boolean.
             builder.assert_bool(local.is_real);
 
+            // Add a dummy degree-3 constraint to circumvent Plonky3 bug.
             builder.assert_eq(
                 local.is_real * local.is_real * local.is_real,
                 local.is_real * local.is_real * local.is_real,
             );
 
+            // Emit a local "receive" interaction for the event's initial information (shard,
+            // timestamp, address and value)
             let mut values =
                 vec![local.initial_shard.into(), local.initial_clk.into(), local.addr.into()];
             values.extend(local.initial_value.map(Into::into));
@@ -216,7 +220,7 @@ where
                 InteractionScope::Local,
             );
 
-            // Send the "receive interaction" to the global table.
+            // Emit the "receive interaction" to the global table.
             builder.send(
                 AirInteraction::new(
                     vec![
@@ -258,6 +262,8 @@ where
                 InteractionScope::Local,
             );
 
+            // Emit a local "send" interaction for the event's final information (shard, timestamp,
+            // address and value)
             let mut values =
                 vec![local.final_shard.into(), local.final_clk.into(), local.addr.into()];
             values.extend(local.final_value.map(Into::into));
