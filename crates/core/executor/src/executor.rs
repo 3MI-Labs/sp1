@@ -2089,6 +2089,15 @@ impl<'a> Executor<'a> {
             tracing::warn!("Not all input bytes were read.");
         }
 
+        /* Count the number of memory initialize and finalize events by
+          1. Counting the number of registers used by the program (and adding 1 for register 0).
+          2. Counting the total amount of used memory by adding the length of the page table with
+            the number of registers that were used.
+          3. Counting the number of initialization events by subtracting the size of the memory
+            image that was already initialised.
+          4. Counting the number of finalization events as the total memory usage, including the
+            memory image.
+        */
         if let Some(estimator) = &mut self.record_estimator {
             // Mirror the logic below.
             // Register 0 is always init and finalized, so we add 1
