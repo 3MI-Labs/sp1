@@ -12,11 +12,15 @@ use rayon_scan::ScanParallelIterator;
 use std::borrow::Borrow;
 
 /// Computes the width of the local permutation trace in terms of extension field elements.
+///
+/// It's equal to the number of interactions divided by the batch size (rounded up) with an extra column to accommodate
+/// the cumulative sums of each interaction's contribution.
 #[must_use]
 pub const fn local_permutation_trace_width(nb_interactions: usize, batch_size: usize) -> usize {
     if nb_interactions == 0 {
         return 0;
     }
+    // The `+ 1` is for the extra column of cumulative sums
     nb_interactions.div_ceil(batch_size) + 1
 }
 
@@ -48,15 +52,25 @@ pub fn populate_local_permutation_row<F: PrimeField, EF: ExtensionField<F>>(
         *value = chunk
             .into_iter()
             .map(|(interaction, is_send): (&Interaction<F>, bool)| {
+                // Initialise the denominator with the first permutation challenge
                 let mut denominator = alpha;
+                // Obtain a copy of the Iterator over the powers of beta (which mean the powers are recomputed on the
+                // fly each time)
                 let mut betas = betas.clone();
+
+                // First add the interaction's kind with a coefficient of beta
                 denominator +=
                     betas.next().unwrap() * EF::from_canonical_usize(interaction.argument_index());
+
+                // Then add all of the interaction's (virtual) columns (computed over the preprocessed and the main
+                // rows) with successive powers of beta (starting at beta^2) as coefficients
                 for (columns, beta) in interaction.values.iter().zip(betas) {
                     denominator += beta * columns.apply::<F, F>(preprocessed_row, main_row);
                 }
-                let mut mult = interaction.multiplicity.apply::<F, F>(preprocessed_row, main_row);
 
+                // Compute the multiplicity as instructed by the interaction and flip the sign if it's a "receiving"
+                // interaction.
+                let mut mult = interaction.multiplicity.apply::<F, F>(preprocessed_row, main_row);
                 if !is_send {
                     mult = -mult;
                 }
@@ -117,7 +131,7 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
     let local_receives = scoped_receives.get(&InteractionScope::Local).unwrap_or(&empty);
 
     // Compute the number of columns for the local permutation argument given the total number of interactions and the
-    // LogUp batch size
+    // LogUp batch size (which is as high as the quotient degree permits it to be)
     let local_permutation_width =
         local_permutation_trace_width(local_sends.len() + local_receives.len(), batch_size);
 
@@ -135,7 +149,7 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
     let random_elements = &permutation_challenges[0..2];
     let local_row_range = 0..local_permutation_width;
 
-    // Check whether there are local interactions to include
+    // Check whether there are local interactions to include, and populate the permutation trace's row if there are.
     if !local_sends.is_empty() || !local_receives.is_empty() {
         // If there is a preprocessed trace ...
         if let Some(prep) = preprocessed_trace {
@@ -173,7 +187,10 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
                         batch_size,
                     );
                 });
-        } else {
+        }
+        // If not, populate the trace row by row without zipping the preprocessed rows (because there aren't any). For
+        // some reason, no assertions are written here.
+        else {
             permutation_trace.par_rows_mut().zip_eq(main_trace.par_row_slices()).for_each(
                 |(row, main_row)| {
                     populate_local_permutation_row::<F, EF>(
@@ -189,19 +206,28 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
             );
         }
 
+        // After the (whole) trace is populated ...
         let zero = EF::zero();
+        // Compute the column of each row's sum *without accumulation*.
         let local_cumulative_sums = permutation_trace
+            // Take each row in parallel ...
             .par_rows_mut()
+            // ... and map it to ...
             .map(|row| {
+                // ... the sum (over the extension field) of all of its elements ...
                 row[local_row_range.start..local_row_range.end - 1].iter().copied().sum::<EF>()
             })
+            // ... and collect all of the row sums into a column vector of sums.
             .collect::<Vec<_>>();
 
+        // Compute the cumulative sums and store them as a column vector.
         let local_cumulative_sums =
             local_cumulative_sums.into_par_iter().scan(|a, b| *a + *b, zero).collect::<Vec<_>>();
 
+        // Since there were interactions and cumulative sums were computed, extract the last one as the total sum
         local_cumulative_sum = *local_cumulative_sums.last().unwrap();
 
+        // Write the cumulative sum of each row and all the previous rows into the last column of the row
         permutation_trace.par_rows_mut().zip_eq(local_cumulative_sums.into_par_iter()).for_each(
             |(row, local_cumulative_sum)| {
                 row[local_row_range.end - 1] = local_cumulative_sum;
@@ -245,14 +271,19 @@ pub fn eval_permutation_constraints<'a, F, AB>(
     let main = builder.main();
     let perm = builder.permutation().to_row_major_matrix();
 
+    // Handle on the variables of the _current_ row of the _preprocessed_ trace
     let preprocessed_local = preprocessed.row_slice(0);
+    // Handle on the variables of the _current_ row of the _main_ trace
     let main_local = main.to_row_major_matrix();
     let main_local = main_local.row_slice(0);
     let main_local: &[AB::Var] = (*main_local).borrow();
+    // Handle on the variables of the _current_ row of the _permutation_ trace
     let perm_local = perm.row_slice(0);
     let perm_local: &[AB::VarEF] = (*perm_local).borrow();
+    // Handle on the variables of the _next_ row of the _permutation_ trace
     let perm_next = perm.row_slice(1);
     let perm_next: &[AB::VarEF] = (*perm_next).borrow();
+    // The width of the permutation trace, as expected by the builder
     let perm_width = perm.width();
 
     // Assert that the permutation trace width is correct.
@@ -262,7 +293,7 @@ pub fn eval_permutation_constraints<'a, F, AB>(
         );
     }
 
-    // Get the permutation challenges.
+    // Get the permutation challenges and the expected cumulative sum.
     let permutation_challenges = builder.permutation_randomness();
     let random_elements: Vec<AB::ExprEF> =
         permutation_challenges.iter().map(|x| (*x).into()).collect();
@@ -286,19 +317,30 @@ pub fn eval_permutation_constraints<'a, F, AB>(
             // correct sign depending on wetther the interaction is a send or a receive.
             let mut rlcs: Vec<AB::ExprEF> = Vec::with_capacity(batch_size);
             let mut multiplicities: Vec<AB::Expr> = Vec::with_capacity(batch_size);
+
+            // Populate the denominator RLCs and numerator multiplicities from each Interaction batched within the chunk
             for (interaction, is_send) in chunk {
+                // Initialise the random linear combination with alpha
                 let mut rlc = alpha.clone();
                 let mut betas = beta.powers();
 
+                // Add into the RLC the kind of the interaction being batched, with a coefficient of beta^1
                 rlc = rlc.clone()
                     + betas.next().unwrap()
                         * AB::ExprEF::from_canonical_usize(interaction.argument_index());
-                for (field, beta) in interaction.values.iter().zip(betas.clone()) {
-                    let elem = field.apply::<AB::Expr, AB::Var>(&preprocessed_local, main_local);
+
+                // For each (virtual) value in the interaction, recreate the affine expression and multiply it by the
+                // next power of beta (starting with beta^2) before adding it into the RLC.
+                for (virtual_element, beta) in interaction.values.iter().zip(betas.clone()) {
+                    let elem =
+                        virtual_element.apply::<AB::Expr, AB::Var>(&preprocessed_local, main_local);
                     rlc = rlc.clone() + beta * elem;
                 }
+
+                // Save the RLC into the vector
                 rlcs.push(rlc);
 
+                // Push the multiplicity with the correct sign and affine expression
                 let send_factor = if is_send { AB::F::one() } else { -AB::F::one() };
                 multiplicities.push(
                     interaction
@@ -312,7 +354,7 @@ pub fn eval_permutation_constraints<'a, F, AB>(
             let mut product = AB::ExprEF::one();
             let mut numerator = AB::ExprEF::zero();
             for (i, (m, rlc)) in multiplicities.into_iter().zip(rlcs.iter()).enumerate() {
-                // Calculate the running product of all rlcs.
+                // Calculate the running product of all RLCs.
                 product = product.clone() * rlc.clone();
 
                 // Calculate the product of all but the current rlc.
