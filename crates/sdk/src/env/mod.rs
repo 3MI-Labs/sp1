@@ -3,7 +3,7 @@
 //! A prover that can execute programs and generate proofs with a different implementation based on
 //! the value of certain environment variables.
 
-mod prove;
+pub mod prove;
 
 use std::env;
 
@@ -20,7 +20,7 @@ use crate::network::builder::NetworkProverBuilder;
 use crate::{
     cpu::{execute::CpuExecuteBuilder, CpuProver},
     cuda::CudaProver,
-    utils::check_release_build,
+    utils::{check_release_build, setup_memory_usage_monitoring},
     SP1ProofMode, SP1ProofWithPublicValues,
 };
 
@@ -53,10 +53,12 @@ impl EnvProver {
             "mock" => Box::new(CpuProver::mock()),
             "cpu" => {
                 check_release_build();
+                setup_memory_usage_monitoring();
                 Box::new(CpuProver::new())
             },
             "cuda" => {
                 check_release_build();
+                setup_memory_usage_monitoring();
                 Box::new(CudaProver::new(SP1Prover::new(), MoongateServer::default()))
             }
             "network" => {
@@ -106,7 +108,7 @@ impl EnvProver {
         }
     }
 
-    /// Creates a new [`EnvProve`] for proving a program on the CPU.
+    /// Creates a new [`EnvProveBuilder`] for proving a program on the CPU.
     ///
     /// # Details
     /// The builder is used for only the [`crate::cpu::CpuProver`] client type.

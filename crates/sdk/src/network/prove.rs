@@ -14,7 +14,7 @@ use crate::{
     NetworkProver, SP1ProofMode, SP1ProofWithPublicValues,
 };
 
-use super::proto::network::FulfillmentStrategy;
+use super::proto::types::FulfillmentStrategy;
 
 use std::{
     future::{Future, IntoFuture},
@@ -34,7 +34,13 @@ pub struct NetworkProveBuilder<'a> {
     pub(crate) gas_limit: Option<u64>,
     pub(crate) tee_2fa: bool,
     pub(crate) min_auction_period: u64,
-    pub(crate) whitelist: Vec<Address>,
+    pub(crate) whitelist: Option<Vec<Address>>,
+    pub(crate) auctioneer: Option<Address>,
+    pub(crate) executor: Option<Address>,
+    pub(crate) verifier: Option<Address>,
+    pub(crate) treasury: Option<Address>,
+    pub(crate) max_price_per_pgu: Option<u64>,
+    pub(crate) auction_timeout: Option<Duration>,
 }
 
 impl NetworkProveBuilder<'_> {
@@ -311,6 +317,7 @@ impl NetworkProveBuilder<'_> {
     /// }
     /// ```
     #[must_use]
+    #[cfg(feature = "tee-2fa")]
     pub fn tee_2fa(mut self) -> Self {
         self.tee_2fa = true;
         self
@@ -346,6 +353,9 @@ impl NetworkProveBuilder<'_> {
     /// Only provers specified in the whitelist will be able to bid and prove on the request. Only
     /// relevant if the strategy is set to [`FulfillmentStrategy::Auction`].
     ///
+    /// If whitelist is `None` when requesting a proof, a set of recently reliable provers will be
+    /// used.
+    ///
     /// # Example
     /// ```rust,no_run
     /// use alloy_primitives::Address;
@@ -358,11 +368,172 @@ impl NetworkProveBuilder<'_> {
     /// let client = ProverClient::builder().network().build();
     /// let (pk, vk) = client.setup(elf);
     /// let whitelist = vec![Address::from_str("0x123").unwrap(), Address::from_str("0x456").unwrap()];
-    /// let builder = client.prove(&pk, &stdin).whitelist(whitelist).run();
+    /// let builder = client.prove(&pk, &stdin).whitelist(Some(whitelist)).run();
     /// ```
     #[must_use]
-    pub fn whitelist(mut self, whitelist: Vec<Address>) -> Self {
+    pub fn whitelist(mut self, whitelist: Option<Vec<Address>>) -> Self {
         self.whitelist = whitelist;
+        self
+    }
+
+    /// Set the auctioneer for the proof request.
+    ///
+    /// # Details
+    /// Only the specified auctioneer will be able to manage the auction for this request. Only
+    /// relevant if the strategy is set to [`FulfillmentStrategy::Auction`].
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use alloy_primitives::Address;
+    /// use sp1_sdk::{Prover, ProverClient, SP1Stdin};
+    /// use std::str::FromStr;
+    ///
+    /// let elf = &[1, 2, 3];
+    /// let stdin = SP1Stdin::new();
+    ///
+    /// let client = ProverClient::builder().network().build();
+    /// let (pk, vk) = client.setup(elf);
+    /// let auctioneer = Address::from_str("0x0000000000000000000000000000000000000000").unwrap();
+    /// let builder = client.prove(&pk, &stdin).auctioneer(auctioneer).run();
+    /// ```
+    #[must_use]
+    pub fn auctioneer(mut self, auctioneer: Address) -> Self {
+        self.auctioneer = Some(auctioneer);
+        self
+    }
+
+    /// Set the executor for the proof request.
+    ///
+    /// # Details
+    /// Only the specified executor will be able to fulfill this request. This is useful for
+    /// whitelisting specific provers for private or prioritized jobs.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use alloy_primitives::Address;
+    /// use sp1_sdk::{Prover, ProverClient, SP1Stdin};
+    /// use std::str::FromStr;
+    ///
+    /// let elf = &[1, 2, 3];
+    /// let stdin = SP1Stdin::new();
+    ///
+    /// let client = ProverClient::builder().network().build();
+    /// let (pk, vk) = client.setup(elf);
+    /// let executor = Address::from_str("0x0000000000000000000000000000000000000000").unwrap();
+    /// let builder = client.prove(&pk, &stdin).executor(executor).run();
+    /// ```
+    #[must_use]
+    pub fn executor(mut self, executor: Address) -> Self {
+        self.executor = Some(executor);
+        self
+    }
+
+    /// Set the verifier for the proof request.
+    ///
+    /// # Details
+    /// Only the specified verifier will be able to verify the proof. Only relevant if the mode is
+    /// not [`SP1ProofMode::Compressed`], as this mode will be verified within the `VApp`.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use alloy_primitives::Address;
+    /// use sp1_sdk::{Prover, ProverClient, SP1Stdin};
+    /// use std::str::FromStr;
+    ///
+    /// let elf = &[1, 2, 3];
+    /// let stdin = SP1Stdin::new();
+    ///
+    /// let client = ProverClient::builder().network().build();
+    /// let (pk, vk) = client.setup(elf);
+    /// let verifier = Address::from_str("0x0000000000000000000000000000000000000000").unwrap();
+    /// let builder = client.prove(&pk, &stdin).verifier(verifier).run();
+    /// ```
+    #[must_use]
+    pub fn verifier(mut self, verifier: Address) -> Self {
+        self.verifier = Some(verifier);
+        self
+    }
+
+    /// Set the treasury for the proof request.
+    ///
+    /// # Details
+    /// The treasury is the address that will receive the protocol fee portion of the proof request
+    /// reward when it is fulfilled.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use alloy_primitives::Address;
+    /// use sp1_sdk::{Prover, ProverClient, SP1Stdin};
+    /// use std::str::FromStr;
+    ///
+    /// let elf = &[1, 2, 3];
+    /// let stdin = SP1Stdin::new();
+    ///
+    /// let client = ProverClient::builder().network().build();
+    /// let (pk, vk) = client.setup(elf);
+    /// let treasury = Address::from_str("0x0000000000000000000000000000000000000000").unwrap();
+    /// let builder = client.prove(&pk, &stdin).treasury(treasury).run();
+    /// ```
+    #[must_use]
+    pub fn treasury(mut self, treasury: Address) -> Self {
+        self.treasury = Some(treasury);
+        self
+    }
+
+    /// Sets the max price per PGU for the proof request.
+    ///
+    /// # Details
+    /// The max price per PGU (prover gas unit) creates a hard ceiling on variable costs, protecting
+    /// requesters from unexpected price escalation due to complex execution paths or resource
+    /// consumption. If the base fee is not provided, a default value will be used.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use sp1_sdk::{Prover, ProverClient, SP1Stdin};
+    ///
+    /// let elf = &[1, 2, 3];
+    /// let stdin = SP1Stdin::new();
+    ///
+    /// let client = ProverClient::builder().network().build();
+    /// let (pk, vk) = client.setup(elf);
+    /// let proof = client
+    ///     .prove(&pk, &stdin)
+    ///     .max_price_per_pgu(1_000_000_000_000_000_000u64) // Set 1 PROVE (18 decimals).
+    ///     .run()
+    ///     .unwrap();
+    /// ```
+    #[must_use]
+    pub fn max_price_per_pgu(mut self, max_price_per_pgu: u64) -> Self {
+        self.max_price_per_pgu = Some(max_price_per_pgu);
+        self
+    }
+
+    /// Sets the auction timeout for the proof request.
+    ///
+    /// # Details
+    /// The auction timeout determines how long to wait for a prover to pick up the request when
+    /// it's in "requested" status. If no prover picks up the request within this timeout, the
+    /// request will be considered failed. Default is 30 seconds.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use sp1_sdk::{Prover, ProverClient, SP1Stdin};
+    /// use std::time::Duration;
+    ///
+    /// let elf = &[1, 2, 3];
+    /// let stdin = SP1Stdin::new();
+    ///
+    /// let client = ProverClient::builder().network().build();
+    /// let (pk, vk) = client.setup(elf);
+    /// let proof = client
+    ///     .prove(&pk, &stdin)
+    ///     .auction_timeout(Duration::from_secs(60)) // Wait 60 seconds for a prover to pick up the request.
+    ///     .run()
+    ///     .unwrap();
+    /// ```
+    #[must_use]
+    pub fn auction_timeout(mut self, auction_timeout: Duration) -> Self {
+        self.auction_timeout = Some(auction_timeout);
         self
     }
 
@@ -420,6 +591,11 @@ impl NetworkProveBuilder<'_> {
                 self.gas_limit,
                 self.min_auction_period,
                 self.whitelist,
+                self.auctioneer,
+                self.executor,
+                self.verifier,
+                self.treasury,
+                self.max_price_per_pgu,
             )
             .await
     }
@@ -485,6 +661,12 @@ impl NetworkProveBuilder<'_> {
                 self.tee_2fa,
                 self.min_auction_period,
                 self.whitelist,
+                self.auctioneer,
+                self.executor,
+                self.verifier,
+                self.treasury,
+                self.max_price_per_pgu,
+                self.auction_timeout,
             )
             .await
     }
