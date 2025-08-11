@@ -13,6 +13,7 @@ use crate::{septic_digest::SepticDigest, shape::OrderedShape};
 pub type QuotientOpenedValues<T> = Vec<T>;
 
 pub struct ShardMainData<SC: StarkGenericConfig, M, P> {
+    /// The traces of the different chips within the shard
     pub traces: Vec<M>,
     pub main_commit: Com<SC>,
     pub main_data: P,

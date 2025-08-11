@@ -283,7 +283,8 @@ where
         data: ShardMainData<SC, Self::DeviceMatrix, Self::DeviceProverData>,
         challenger: &mut <SC as StarkGenericConfig>::Challenger,
     ) -> Result<ShardProof<SC>, Self::Error> {
-        let chips = self.machine().shard_chips_ordered(&data.chip_ordering).collect::<Vec<_>>();
+        let chips_in_shard =
+            self.machine().shard_chips_ordered(&data.chip_ordering).collect::<Vec<_>>();
         let traces = data.traces;
 
         let config = self.machine().config();
@@ -294,7 +295,7 @@ where
             degrees.iter().map(|degree| log2_strict_usize(*degree)).collect::<Vec<_>>();
 
         let log_quotient_degrees =
-            chips.iter().map(|chip| chip.log_quotient_degree()).collect::<Vec<_>>();
+            chips_in_shard.iter().map(|chip| chip.log_quotient_degree()).collect::<Vec<_>>();
 
         let pcs = config.pcs();
         let trace_domains =
@@ -320,44 +321,54 @@ where
             (Vec<_>, Vec<_>),
             (Vec<_>, Vec<_>),
         ) = tracing::debug_span!("generate permutation traces").in_scope(|| {
-            chips
+            chips_in_shard
+                // For each chip ...
                 .par_iter()
+                // ... zipped with its trace ...
                 .zip(traces.par_iter())
-                .map(|(chip, main_trace)| {
-                    let preprocessed_trace =
+                .map(|(chip, chip_main_trace)| {
+                    // ... compute the permutation trace:
+
+                    // Get the chip's preprocessed trace (aka virtual columns) from the proving key
+                    let chip_preprocessed_trace =
                         pk.chip_ordering.get(&chip.name()).map(|&index| &pk.traces[index]);
-                    let (perm_trace, local_sum) = chip.generate_permutation_trace(
-                        preprocessed_trace,
-                        main_trace,
+
+                    // Compute the permutation trace for the chip as well as the local sum
+                    // TODO: enhance documentation after further reading
+                    let (chip_permutation_trace, local_sum) = chip.generate_permutation_trace(
+                        chip_preprocessed_trace,
+                        chip_main_trace,
                         &local_permutation_challenges,
                     );
+
                     let global_sum = if chip.commit_scope() == InteractionScope::Local {
                         SepticDigest::<Val<SC>>::zero()
                     } else {
-                        let main_trace_size = main_trace.height() * main_trace.width();
-                        let last_row = &main_trace.values[main_trace_size - 14..main_trace_size];
+                        let main_trace_size = chip_main_trace.height() * chip_main_trace.width();
+                        let last_row =
+                            &chip_main_trace.values[main_trace_size - 14..main_trace_size];
                         SepticDigest(SepticCurve {
                             x: SepticExtension::<Val<SC>>::from_base_fn(|i| last_row[i]),
                             y: SepticExtension::<Val<SC>>::from_base_fn(|i| last_row[i + 7]),
                         })
                     };
-                    ((perm_trace, preprocessed_trace), (global_sum, local_sum))
+                    ((chip_permutation_trace, chip_preprocessed_trace), (global_sum, local_sum))
                 })
                 .unzip()
         });
 
         // Compute some statistics.
-        for i in 0..chips.len() {
+        for i in 0..chips_in_shard.len() {
             let trace_width = traces[i].width();
             let trace_height = traces[i].height();
             let prep_width = prep_traces[i].map_or(0, |x| x.width());
             let permutation_width = permutation_traces[i].width();
-            let total_width = trace_width +
-                prep_width +
-                permutation_width * <SC::Challenge as AbstractExtensionField<SC::Val>>::D;
+            let total_width = trace_width
+                + prep_width
+                + permutation_width * <SC::Challenge as AbstractExtensionField<SC::Val>>::D;
             tracing::debug!(
                 "{:<15} | Main Cols = {:<5} | Pre Cols = {:<5}  | Perm Cols = {:<5} | Rows = {:<5} | Cells = {:<10}",
-                chips[i].name(),
+                chips_in_shard[i].name(),
                 trace_width,
                 prep_width,
                 permutation_width * <SC::Challenge as AbstractExtensionField<SC::Val>>::D,
@@ -407,16 +418,15 @@ where
         // Compute the quotient values.
         let alpha: SC::Challenge = challenger.sample_ext_element::<SC::Challenge>();
         let parent_span = tracing::debug_span!("compute quotient values");
-        let quotient_values =
-            parent_span.in_scope(|| {
-                quotient_domains
+        let quotient_values = parent_span.in_scope(|| {
+            quotient_domains
                 .into_par_iter()
                 .enumerate()
                 .map(|(i, quotient_domain)| {
                     tracing::debug_span!(parent: &parent_span, "compute quotient values for domain")
                         .in_scope(|| {
                             let preprocessed_trace_on_quotient_domains =
-                                pk.chip_ordering.get(&chips[i].name()).map(|&index| {
+                                pk.chip_ordering.get(&chips_in_shard[i].name()).map(|&index| {
                                     pcs.get_evaluations_on_domain(&pk.data, index, *quotient_domain)
                                         .to_row_major_matrix()
                                 });
@@ -428,7 +438,7 @@ where
                                 .to_row_major_matrix();
 
                             let chip_num_constraints =
-                                pk.constraints_map.get(&chips[i].name()).unwrap();
+                                pk.constraints_map.get(&chips_in_shard[i].name()).unwrap();
 
                             // Calculate powers of alpha for constraint evaluation:
                             // 1. Generate sequence [α⁰, α¹, ..., α^(n-1)] where n = chip_num_constraints.
@@ -439,7 +449,7 @@ where
                             powers_of_alpha_rev.reverse();
 
                             quotient_values(
-                                chips[i],
+                                chips_in_shard[i],
                                 &local_cumulative_sums[i],
                                 &global_cumulative_sums[i],
                                 trace_domains[i],
@@ -454,7 +464,7 @@ where
                         })
                 })
                 .collect::<Vec<_>>()
-            });
+        });
 
         // Split the quotient values and commit to them.
         let quotient_domains_and_chunks = quotient_domains
@@ -473,7 +483,7 @@ where
         let num_quotient_chunks = quotient_domains_and_chunks.len();
         assert_eq!(
             num_quotient_chunks,
-            chips.iter().map(|c| 1 << c.log_quotient_degree()).sum::<usize>()
+            chips_in_shard.iter().map(|c| 1 << c.log_quotient_degree()).sum::<usize>()
         );
 
         let (quotient_commit, quotient_data) = tracing::debug_span!("commit to quotient traces")
@@ -503,7 +513,7 @@ where
             .in_scope(|| {
                 trace_domains
                     .iter()
-                    .zip(chips.iter())
+                    .zip(chips_in_shard.iter())
                     .map(|(domain, chip)| {
                         if !chip.local_only() {
                             vec![zeta, domain.next_point(zeta).unwrap()]
@@ -541,7 +551,7 @@ where
         // Collect the opened values for each chip.
         let [preprocessed_values, main_values, permutation_values, mut quotient_values] =
             openings.try_into().unwrap();
-        assert!(main_values.len() == chips.len());
+        assert!(main_values.len() == chips_in_shard.len());
         let preprocessed_opened_values = preprocessed_values
             .into_iter()
             .zip(pk.local_only.iter())
@@ -559,7 +569,7 @@ where
 
         let main_opened_values = main_values
             .into_iter()
-            .zip(chips.iter())
+            .zip(chips_in_shard.iter())
             .map(|(op, chip)| {
                 if !chip.local_only() {
                     let [local, next] = op.try_into().unwrap();
@@ -606,7 +616,7 @@ where
                 )| {
                     let preprocessed = pk
                         .chip_ordering
-                        .get(&chips[i].name())
+                        .get(&chips_in_shard[i].name())
                         .map(|&index| preprocessed_opened_values[index].clone())
                         .unwrap_or(AirOpenedValues { local: vec![], next: vec![] });
                     ChipOpenedValues {

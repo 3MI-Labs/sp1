@@ -28,25 +28,26 @@ pub fn populate_local_permutation_row<F: PrimeField, EF: ExtensionField<F>>(
     row: &mut [EF],
     preprocessed_row: &[F],
     main_row: &[F],
-    sends: &[Interaction<F>],
-    receives: &[Interaction<F>],
+    chip_sends: &[Interaction<F>],
+    chip_receives: &[Interaction<F>],
     random_elements: &[EF],
     batch_size: usize,
 ) {
     let alpha = random_elements[0];
     let betas = random_elements[1].powers(); // TODO: optimize
 
-    let interaction_chunks = &sends
+    // Chain all the interactions together and divide them into chunks
+    let interaction_chunks = &chip_sends
         .iter()
-        .map(|int| (int, true))
-        .chain(receives.iter().map(|int| (int, false)))
+        .map(|interaction| (interaction, true))
+        .chain(chip_receives.iter().map(|interaction| (interaction, false)))
         .chunks(batch_size);
 
     // Compute the denominators \prod_{i\in B} row_fingerprint(alpha, beta).
     for (value, chunk) in row.iter_mut().zip(interaction_chunks) {
         *value = chunk
             .into_iter()
-            .map(|(interaction, is_send)| {
+            .map(|(interaction, is_send): (&Interaction<F>, bool)| {
                 let mut denominator = alpha;
                 let mut betas = betas.clone();
                 denominator +=
@@ -101,50 +102,67 @@ pub fn scoped_interactions<F: Field>(
 pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
     sends: &[Interaction<F>],
     receives: &[Interaction<F>],
-    preprocessed: Option<&RowMajorMatrix<F>>,
-    main: &RowMajorMatrix<F>,
-    random_elements: &[EF],
+    preprocessed_trace: Option<&RowMajorMatrix<F>>,
+    main_trace: &RowMajorMatrix<F>,
+    permutation_challenges: &[EF],
     batch_size: usize,
 ) -> (RowMajorMatrix<EF>, EF) {
     let empty = vec![];
+
+    // Group the interactions by scope (local to the shard or global to the computation)
     let (scoped_sends, scoped_receives) = scoped_interactions(sends, receives);
+
+    // Separate the shard-local interactions from the groups
     let local_sends = scoped_sends.get(&InteractionScope::Local).unwrap_or(&empty);
     let local_receives = scoped_receives.get(&InteractionScope::Local).unwrap_or(&empty);
 
+    // Compute the number of columns for the local permutation argument given the total number of interactions and the
+    // LogUp batch size
     let local_permutation_width =
         local_permutation_trace_width(local_sends.len() + local_receives.len(), batch_size);
 
-    let height = main.height();
+    // Initialize an all-zero permutation trace of the correct dimension (as high as the main trace)
+    let height = main_trace.height();
     let permutation_trace_width = local_permutation_width;
     let mut permutation_trace = RowMajorMatrix::new(
         vec![EF::zero(); permutation_trace_width * height],
         permutation_trace_width,
     );
 
+    // Initialize the LogUp cumulative sum to the 0 element in the _extension field_
     let mut local_cumulative_sum = EF::zero();
 
-    let random_elements = &random_elements[0..2];
+    let random_elements = &permutation_challenges[0..2];
     let local_row_range = 0..local_permutation_width;
 
+    // Check whether there are local interactions to include
     if !local_sends.is_empty() || !local_receives.is_empty() {
-        if let Some(prep) = preprocessed {
+        // If there is a preprocessed trace ...
+        if let Some(prep) = preprocessed_trace {
+            // ... check that it has the correct height ...
             assert_eq!(
                 prep.height(),
-                main.height(),
+                main_trace.height(),
                 "preprocessed and main have different heights: main width = {}, preprocessed width = {}",
-                main.width(),
+                main_trace.width(),
                 prep.width()
             );
+            // ... and that the permutation trace also has the correct height ...
             assert_eq!(
                 permutation_trace.height(),
-                main.height(),
+                main_trace.height(),
                 "permutation trace and main have different heights"
             );
+            // ... and populate the trace row by row.
             permutation_trace
+                // For each row of the permutation trace,
                 .par_rows_mut()
+                // zipped with the corresponding preprocessed row
                 .zip_eq(prep.par_row_slices())
-                .zip_eq(main.par_row_slices())
+                // and the corresponding main row,
+                .zip_eq(main_trace.par_row_slices())
                 .for_each(|((row, prep_row), main_row)| {
+                    // populate it with the required values
                     populate_local_permutation_row::<F, EF>(
                         &mut row[0..local_permutation_width],
                         prep_row,
@@ -156,7 +174,7 @@ pub fn generate_permutation_trace<F: PrimeField, EF: ExtensionField<F>>(
                     );
                 });
         } else {
-            permutation_trace.par_rows_mut().zip_eq(main.par_row_slices()).for_each(
+            permutation_trace.par_rows_mut().zip_eq(main_trace.par_row_slices()).for_each(
                 |(row, main_row)| {
                     populate_local_permutation_row::<F, EF>(
                         &mut row[0..local_permutation_width],
@@ -272,9 +290,9 @@ pub fn eval_permutation_constraints<'a, F, AB>(
                 let mut rlc = alpha.clone();
                 let mut betas = beta.powers();
 
-                rlc = rlc.clone() +
-                    betas.next().unwrap() *
-                        AB::ExprEF::from_canonical_usize(interaction.argument_index());
+                rlc = rlc.clone()
+                    + betas.next().unwrap()
+                        * AB::ExprEF::from_canonical_usize(interaction.argument_index());
                 for (field, beta) in interaction.values.iter().zip(betas.clone()) {
                     let elem = field.apply::<AB::Expr, AB::Var>(&preprocessed_local, main_local);
                     rlc = rlc.clone() + beta * elem;
@@ -285,8 +303,8 @@ pub fn eval_permutation_constraints<'a, F, AB>(
                 multiplicities.push(
                     interaction
                         .multiplicity
-                        .apply::<AB::Expr, AB::Var>(&preprocessed_local, main_local) *
-                        send_factor,
+                        .apply::<AB::Expr, AB::Var>(&preprocessed_local, main_local)
+                        * send_factor,
                 );
             }
 
